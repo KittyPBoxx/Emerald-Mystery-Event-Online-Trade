@@ -1,0 +1,8 @@
+%rename link                old_link
+
+*link:
+-T ../gba_pkjb.ld%s %(old_link) --gc-sections
+
+*startfile:
+../start/pkjb_crt0%O%s crti%O%s crtbegin%O%s
+

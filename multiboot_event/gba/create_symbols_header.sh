@@ -1,0 +1,1 @@
+nm -g pokeemerald.elf | awk '/ T / {printf "#define ROM_%s ((void*) 0x%s)\n", $3, $1}' > source/symbols.h

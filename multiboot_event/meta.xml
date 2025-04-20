@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>Emerald (U) Online Trade</name>
+  <coder>KittyPBoxx</coder>
+  <version>0.1.0</version>
+  <release_date>20240531135633</release_date>
+  <short_description>Emerald (U) Online Trade</short_description> 
+  <long_description>Loads a mystery event into vanilla Emerald (U) that allows trading online</long_description> 
+  <no_ios_reload/>
+</app>

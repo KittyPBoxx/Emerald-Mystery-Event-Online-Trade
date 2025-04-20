@@ -1,0 +1,617 @@
+#include "macros.h"        // Equivalent to asm/macros.inc
+#include "constants.h"     // Equivalent to constants/constants.inc
+
+// Constants for memory locations
+#define GCMB_STRUCT_COUNTER1 0x00
+#define GCMB_STRUCT_COUNTER2 0x01
+#define GCMB_STRUCT_MBPROGRESS 0x02
+#define GCMB_STRUCT_SAVEDVCOUNT 0x03
+#define GCMB_STRUCT_keyA 0x04
+#define GCMB_STRUCT_keyB 0x08
+#define GCMB_STRUCT_KEYC 0x0C
+#define GCMB_STRUCT_bootKey 0x10
+#define GCMB_STRUCT_imageSize 0x12
+#define GCMB_STRUCT_SESSION_KEY 0x14
+#define GCMB_STRUCT_HASH_VAL 0x18
+#define GCMB_STRUCT_KEYC_DERIVATION 0x1C
+#define GCMB_STRUCT_baseDestPtr 0x20
+#define GCMB_STRUCT_curDestPtr 0x24
+#define GCMB_STRUCT_serialIntrHandler 0x28
+
+// Constants for ROM header
+#define ROM_HEADER_NINTENDO_LOGO_OFFSET 0x04
+#define ROM_HEADER_NINTENDO_LOGO_LENGTH 0x98
+#define ROM_HEADER_NINTENDO_LOGO_END 0xA0
+
+#define INTR_FLAG_SERIAL        0x01   // Serial interrupt flag (bit 0)
+
+#define GameCubeMultiBoot_MaximumImageSizeUInt32s 0x4000
+
+// Base addresses for different register pools
+#define REG_BASE 0x80000000 // This should be replaced with the actual base address if known
+#define REG_DISPSTAT 0x04000000 // Same, use actual address if needed
+#define EWRAM_START 0x02000000 // Replace with the actual EWRAM start address if different
+
+// Pool addresses
+const volatile u32* pool_InterruptRegs = (const volatile u32*)(REG_BASE + 0x200);
+const volatile u32* pool_SerialRegs = (const volatile u32*)(REG_BASE + 0x120);
+const volatile u32* pool_RegDispstat = (const volatile u32*)(REG_DISPSTAT);
+const char* pool_RubyUSAGameCode = "AXVE"; // ASCII string for Ruby USA game code
+const volatile u32* pool_MultiBootLoadAddr = (const volatile u32*)EWRAM_START;
+
+// Progress states
+enum 
+{
+    MBPROGRESS_NONE,
+    MBPROGRESS_LOGO_CORRECT,
+    MBPROGRESS_READY_TO_BOOT,
+};
+
+// Magic constants
+#define GCMB_MAGIC_BOOTKEY 0xBB
+#define GCMB_MAGIC_COUNTER2 0xCC
+#define GCMB_MAGIC_keyA 0xDD
+#define GCMB_MAGIC_keyB 0xEE
+#define GCMB_MAGIC_KEYCDERIVATION 0xFF
+
+#define pool_HashVal 0xA1C10000
+
+const char *pool_Kawa = "Kawa";
+
+extern u8 RomHeaderNintendoLogo[];
+const u32 pool_NintendoLogo = (u32) &RomHeaderNintendoLogo;
+
+extern u32 pool_InterruptRegs;
+extern u32 pool_HashVal;
+
+struct GameCubeMultiBoot 
+{
+    u8 *serialIntrHandler;
+    u8 counter1;
+    u8 counter2;
+    u8 mbProgress;
+    u32 curDestPtr;
+    u32 baseDestPtr;
+    u32 keyA;
+    u32 keyB;
+    u32 hashVal;
+    u32 sessionKey;
+    u32 keyC;
+    u32 bootKey;
+    u8 savedVCount;
+    u32 keyCDerivation;
+    u16 imageSize;
+};
+
+void GameCubeMultiBoot_Hash(u32 *input) 
+{
+    u32 hashValue = *input; 
+
+    for (u32 count = 32; count > 0; count--) 
+    {
+        hashValue >>= 1;  // Right shift hashValue by 1
+        
+        // If the least significant bit of hashValue is 1, XOR with pool_HashVal
+        if (hashValue & 1) 
+        {
+            hashValue ^= pool_HashVal;
+        }
+    }
+
+    *input = hashValue;
+}
+
+void GameCubeMultiBoot_Main(struct GameCubeMultiBoot *mb) 
+{
+    // Check if there's an interrupt handler
+    if (mb->serialIntrHandler != NULL) 
+    {
+        // Increment counter2 if interrupt handler exists
+        mb->counter2 += 1;
+
+        // If no further action needed, return
+        if (mb->mbProgress == MBPROGRESS_READY_TO_BOOT) 
+        {
+            return;
+        }
+
+        // Save current interrupt state and disable interrupts
+        u16 interruptRegs = *(u16 *)(pool_InterruptRegs + (OFFSET_REG_IME - 0x200));
+        *(u16 *)(pool_InterruptRegs + (OFFSET_REG_IME - 0x200)) = 0;
+
+        // Increment counter1, if it's <= 10
+        if (mb->counter1 <= 10) 
+        {
+            mb->counter1 += 1;
+        }
+
+        // Restore interrupt state
+        *(u16 *)(pool_InterruptRegs + (OFFSET_REG_IME - 0x200)) = interruptRegs;
+    }
+
+    // Initialize multiboot structures if necessary
+    if (mb->mbProgress == MBPROGRESS_NONE) 
+    {
+        GameCubeMultiBoot_Init(mb);
+    }
+
+    // Check Nintendo logo, compare it with the transferred logo in memory
+    if (mb->mbProgress == MBPROGRESS_NONE) 
+    {
+        if (mb->curDestPtr - mb->baseDestPtr == ROM_HEADER_NINTENDO_LOGO_END) 
+        {
+            u8 *romLogo = (u8 *)pool_NintendoLogo;
+            u8 *curLogo = (u8 *)mb->baseDestPtr;
+            bool logoMatches = true;
+
+            for (int i = 0; i < ROM_HEADER_NINTENDO_LOGO_LENGTH; i++) 
+            {
+                if (curLogo[i] != romLogo[i]) 
+                {
+                    logoMatches = false;
+                    break;
+                }
+            }
+
+            if (logoMatches) 
+            {
+                mb->mbProgress = MBPROGRESS_LOGO_CORRECT;
+
+                // XOR keyA and keyB for the checksum
+                mb->hashVal = mb->keyA ^ mb->keyB;
+
+                // Derive session key
+                mb->sessionKey = (mb->hashVal * 0x6177614B) + 1;
+            } 
+            else 
+            {
+                GameCubeMultiBoot_Init(mb);
+            }
+        }
+    }
+
+    // Decrypt image data and update sessionKey and hashVal
+    u32 *curDestPtr = (u32 *)mb->curDestPtr;
+    u32 *baseDestPtr = (u32 *)mb->baseDestPtr;
+    u32 *sessionKey = &mb->sessionKey;
+
+    while (curDestPtr < baseDestPtr) 
+    {
+        u32 data = *curDestPtr;
+        data ^= *sessionKey;
+        data += mb->hashVal;
+        *curDestPtr = data;
+        mb->hashVal ^= data;
+        mb->sessionKey = (mb->sessionKey * 0x6177614B) + 1;
+        curDestPtr++;
+    }
+
+    // Handle KeyC generation if necessary
+    if (mb->keyC == 0) 
+    {
+        mb->keyC = (mb->savedVCount << 24) - 1;
+        GameCubeMultiBoot_Hash(&mb->keyC);
+        mb->keyCDerivation = GCMB_MAGIC_KEYCDERIVATION + (mb->keyC << 8);
+    }
+
+    // Verify boot key
+    if (mb->bootKey == 0) 
+    {
+        GameCubeMultiBoot_Hash(&mb->keyC);
+        if (mb->bootKey != mb->hashVal) 
+        {
+            GameCubeMultiBoot_Init(mb);
+        } 
+        else 
+        {
+            mb->mbProgress = MBPROGRESS_READY_TO_BOOT;
+        }
+    }
+}
+
+void GameCubeMultiBoot_ExecuteProgram(struct GameCubeMultiBoot *mb) 
+{
+    // Check if the multiboot image is ready to boot
+    if (mb->mbprogress != MBPROGRESS_READY_TO_BOOT) 
+    {
+        return;  // If not ready, just return to the caller
+    }
+
+    // Disable interrupts
+    volatile u16 *interruptRegs = (volatile u16 *) pool_InterruptRegs;
+    *interruptRegs = 0;  // Set the Interrupt Master Enable (IME) register to 0 (disable interrupts)
+
+    // Jump to the real entry point of the multiboot image (past the image header), in ARM mode
+    u32 *multibootLoadAddr = (u32 *) pool_MultiBootLoadAddr;
+    u32 entryPoint = *multibootLoadAddr + 0xC0;
+    // Assuming a function pointer or method of execution for ARM code
+    void (*entry)(void) = (void (*)(void)) entryPoint;
+    entry();  // Jump to the entry point
+}
+
+void GameCubeMultiBoot_Init(struct GameCubeMultiBoot *mb)
+{
+    // Save IME register (Interrupt Master Enable)
+    volatile u16 *interruptRegs = (volatile u16 *) pool_InterruptRegs;
+    u16 imeReg = *interruptRegs;  // Save the current IME register value
+
+    // Disable interrupts (Set IME register to 0)
+    *interruptRegs = 0;
+
+    // Set the handler to the "Stop" routine, unless the first command is a device reset
+    mb->serialIntrHandler = (void *) GcMbIntrHandler_Stop;
+
+    // Push the first byte of the structure, process the next byte, and add to the base pointer
+    u8 byte1 = mb->byte3;
+    u8 byte2 = mb->byte1;
+    mb->baseDestPtr += GCMB_STRUCT_baseDestPtr;
+
+    // Clear all but the last 3 fields of the structure
+    for (u32 *ptr = (u32 *) mb; (u8 *) ptr < (u8 *) mb + GCMB_STRUCT_baseDestPtr; ptr++) 
+    {
+        *ptr = 0;
+    }
+
+    // Set the last 3 fields
+    mb->byte3 = byte1;
+    mb->byte1 = byte2;
+
+    // Configure JOY Bus registers (turn off and then turn on JOY Bus mode)
+    volatile u32 *serialRegs = (volatile u32 *) pool_SerialRegs;
+    serialRegs[OFFSET_REG_RCNT] = 0;  // Turn off JOY Bus mode
+    serialRegs[OFFSET_REG_RCNT] = 0xC0 << 8;  // Turn on JOY Bus mode
+
+    // Initialize JOY Bus registers
+    serialRegs[OFFSET_REG_JOYCNT] = 0x47;
+    serialRegs[OFFSET_REG_JOYSTAT] = imeReg;
+
+    // Acknowledge serial interrupt
+    serialRegs[OFFSET_REG_IF] = INTR_FLAG_SERIAL;
+
+    // Enable serial interrupt
+    u16 interruptEnable = serialRegs[OFFSET_REG_IE];
+    interruptEnable |= INTR_FLAG_SERIAL;
+    serialRegs[OFFSET_REG_IE] = interruptEnable;
+
+    // Restore IME register (Interrupt Master Enable)
+    serialRegs[OFFSET_REG_IME] = imeReg;
+}
+
+void acknowledge_serial_flags(void) 
+{
+    volatile u16* joycnt = pool_SerialRegs + 0x120;  // JOYCNT register
+    u16 joycnt_val = *joycnt;
+    *joycnt = joycnt_val; // Acknowledge flags by writing back
+}
+
+// Function to check the multiboot progress and perform handshake
+void GameCubeMultiBoot_HandleSerialInterrupt(struct GameCubeMultiBoot* mb) 
+{
+    // Acknowledge reset/receive/send flags
+    acknowledge_serial_flags();
+    
+    // Reset serial interrupt status
+    mb->serialIntrHandler = 0;
+
+    // Check for serial interrupt handler
+    if (mb->serialIntrHandler == 0) 
+    {
+        return; // No handler set, exit the function
+    }
+
+    // Check if the interrupt was a device reset command
+    if (mb->serialIntrHandler & 0x2) 
+    {
+        // Handle the device reset command
+        GameCubeMultiBoot_BeginHandshake(mb);
+        return;
+    }
+
+    // Move to the next interrupt handler
+    u32 handler_addr = mb->serialIntrHandler;
+    if (handler_addr != 0) 
+    {
+        // Jump to the handler function (assuming function pointer-like behavior)
+        ((void (*)(void))handler_addr)();
+    }
+}
+
+// Function to handle the handshake process
+void GameCubeMultiBoot_BeginHandshake(struct GameCubeMultiBoot* mb) 
+{
+    // Send the game code, the other side should send back the same game code
+    u32 game_code = *pool_RubyUSAGameCode;
+    volatile u16* joytrans = pool_SerialRegs + 0x120;  // JOYTRANS register
+    *joytrans = game_code;
+
+    // Use saved VCount value to provide entropy for keyB
+    u8 vcount = mb->savedVCount;
+    mb->keyB[1] = vcount;
+
+    // Check progress and stop if necessary
+    if (mb->mbProgress != 0) {
+        return; // Stop if multiboot progress is not 0
+    }
+
+    // Set the destination pointers for the multiboot image
+    mb->baseDestPtr = *pool_MultiBootLoadAddr;
+    mb->curDestPtr = mb->baseDestPtr;
+
+    // Set the interrupt handler to check game code sent
+    mb->serialIntrHandler = (u32) GameCubeMultiBoot_CheckGameCodeSent;
+}
+
+// Function to check if the game code has been sent
+void GameCubeMultiBoot_CheckGameCodeSent(void) 
+{
+    // Check if the GameCube replied with the same game code
+    volatile u16* joyrecv = pool_SerialRegs + 0x120;  // JOYRECV register
+    u32 recv_game_code = *joyrecv;
+    
+    if (recv_game_code != *pool_RubyUSAGameCode) {
+        return; // Stop if the game codes don't match
+    }
+
+    // Use saved VCount for entropy and save to keyB
+    u8 vcount = mb->savedVCount;
+    mb->keyB[3] = vcount;
+
+    // Continue handshake
+    GameCubeMultiBoot_ReceivekeyA(mb);
+}
+
+// Function to receive keyA
+void GameCubeMultiBoot_ReceivekeyA(struct GameCubeMultiBoot* mb) 
+{
+    // Simulate receiving keyA (should match GCMB_MAGIC_keyA)
+    volatile u16* joyrecv = pool_SerialRegs + 0x120;  // JOYRECV register
+    u32 received_key = *joyrecv;
+
+    if ((received_key >> 24) != GCMB_MAGIC_keyA) {
+        return; // Stop if keyA magic number is invalid
+    }
+
+    // Store received keyA
+    mb->keyA = received_key;
+
+    // Add entropy from another counter (e.g., Counter2)
+    u8 counter2 = mb->savedVCount; // Using saved VCount here for simplicity
+    mb->keyB[2] = counter2;
+
+    // Process keyB validation
+    GameCubeMultibootKeyBCheckLoop(mb);
+}
+
+// Function to validate and check keyB
+void GameCubeMultibootKeyBCheckLoop(struct GameCubeMultiBoot* mb) 
+{
+    u8 sum = 0;
+    for (int i = 0; i < 4; i++) {
+        sum += mb->keyB[i]; // Add up the bytes of keyB
+    }
+    if (sum > 0xE) {
+        mb->keyB[2] = 0xFF; // Save new byte if sum exceeds threshold
+    }
+
+    // Send keyB and check the response
+    GameCubeMultiBoot_CheckkeyBSent(mb);
+}
+
+// Function to check if keyB has been sent
+void GameCubeMultiBoot_CheckkeyBSent(struct GameCubeMultiBoot* mb) 
+{
+    // Send keyB with magic number and check the response
+    volatile u16* joytrans = pool_SerialRegs + 0x120;  // JOYTRANS register
+    u32 keyB = mb->keyB[0] | (mb->keyB[1] << 8) | (mb->keyB[2] << 16) | (mb->keyB[3] << 24);
+    *joytrans = keyB;
+
+    // Process the next interrupt handler
+    mb->serialIntrHandler = (u32) GameCubeMultiBoot_CheckImageSizeResponse;
+}
+
+// Save a new byte into the KeyB field
+void GameCubeMultiBoot_KeyBSaveNewByte(GameCubeMultiBootStruct *gcmbStruct, uint8_t newByte) 
+{
+    // Save the byte at the offset of +2 in the KeyB field
+    gcmbStruct->KeyB = (gcmbStruct->KeyB & 0xFFFF00FF) | ((uint32_t)newByte << 8);
+}
+
+// Add the KeyB magic number, send KeyB, and set the new interrupt handler
+void GameCubeMultiBoot_KeyBCheckEnd(GameCubeMultiBootStruct *gcmbStruct) 
+{
+    uint32_t keyBWithMagic = gcmbStruct->KeyB + GCMB_MAGIC_KEYB;
+
+    // Save KeyB with magic number into JOY_TRANS
+    REG_JOY_TRANS = keyBWithMagic;
+
+    // Set the JOYSTAT value
+    REG_JOYSTAT = 0x0030;
+
+    // Set the new interrupt handler to GcMbIntrHandler_CheckKeyBSent
+    GameCubeMultiBoot_SetInterruptHandler(GcMbIntrHandler_CheckKeyBSent);
+}
+
+
+// Function to check if the image size response has been received
+void GameCubeMultiBoot_CheckImageSizeResponse(struct GameCubeMultiBoot* mb) 
+{
+    // Check if the image size is valid
+    volatile u16* joyrecv = pool_SerialRegs + 0x120;  // JOYRECV register
+    u32 recv_size = *joyrecv;
+
+    if (recv_size > GCMB_MAX_imageSize) {
+        return; // Stop if image size exceeds the limit
+    }
+
+    mb->imageSize = recv_size;
+
+    // Continue to check for image response
+    GameCubeMultiBoot_CheckImageResponse(mb);
+}
+
+// Function to handle the image response
+void GameCubeMultiBoot_CheckImageResponse(void) 
+{
+    // Check if the receive operation is complete by shifting the value in r1 by 1
+    u32 receiveComplete = *(volatile u32*)(pool_SerialRegs + OFFSET_REG_JOY_RECV) >> 1;
+    
+    // If the receive is not complete, stop the handler
+    if (receiveComplete == 0) {
+        GameCubeMultiBoot_Stop();
+        return;
+    }
+
+    // Load the current destination pointer (GCMB_STRUCT_CUR_DEST_PTR)
+    u32* currentDestPtr = (u32*) *(volatile u32*) (pool_InterruptRegs + GCMB_STRUCT_CUR_DEST_PTR);
+    
+    // Prepare r1 with the value 0x4, then AND with the current destination pointer
+    u32 offset = *currentDestPtr & 0x4;
+
+    // Add 0x8 to the result and shift left by 2 (multiplying by 4)
+    offset += 0x8;
+    offset <<= 2;
+
+    // Write the result into the JOYSTAT register (the hardware status register)
+    *(volatile u16*)(pool_SerialRegs + OFFSET_REG_JOYSTAT) = offset;
+
+    // Get the received uint32 value from the JOY_RECV register
+    u32 receivedData = *(volatile u32*)(pool_SerialRegs + OFFSET_REG_JOY_RECV);
+
+    // Store received data at the current destination pointer and advance the pointer
+    *currentDestPtr = receivedData;
+    currentDestPtr++;
+
+    // Save the updated pointer back into GCMB_STRUCT_CUR_DEST_PTR
+    *(volatile u32*)(pool_InterruptRegs + GCMB_STRUCT_CUR_DEST_PTR) = (u32) currentDestPtr;
+
+    // Decrease the image size by 1 (in uint32s)
+    u16 imageSize = *(volatile u16*)(pool_InterruptRegs + GCMB_STRUCT_IMAGE_SIZE);
+    imageSize--;
+
+    // Save the updated image size back to the structure
+    *(volatile u16*)(pool_InterruptRegs + GCMB_STRUCT_IMAGE_SIZE) = imageSize;
+
+    // If the transfer is not yet complete, go back and check the VCount again
+    if (imageSize != 0) {
+        GameCubeMultiBoot_ReadVCount();
+    }
+}
+
+void GameCubeMultiBoot_SendCounter2(void) 
+{
+    // Load the value of COUNTER2 and shift it left by 8 bits
+    u8 counter2 = *(volatile u8*)(r0 + GCMB_STRUCT_COUNTER2);
+    counter2 <<= 8;
+
+    // Add the magic number for Counter2
+    counter2 += GCMB_MAGIC_COUNTER2;
+
+    // Send the counter2 value via JOY_TRANS register
+    *(volatile u16*)(pool_SerialRegs + OFFSET_REG_JOY_TRANS) = counter2;
+
+    // Set the interrupt handler to check if the counter2 has been sent
+    GameCubeMultiBoot_SetInterruptHandler(&GameCubeMultiBoot_CheckCounter2Sent);
+}
+
+void GameCubeMultiBoot_CheckCounter2Sent(void) 
+{
+    // Check if the send operation has failed by shifting the result to check the 31st bit
+    u32 sendComplete = *(volatile u32*)(pool_InterruptRegs + OFFSET_REG_IF) >> 31;
+
+    // If send failed, stop the handler
+    if (sendComplete == 0) {
+        GameCubeMultiBoot_Stop();
+        return;
+    }
+
+    // Check if KeyC derivation value has been generated
+    u32 keyCDerivation = *(volatile u32*)(r0 + GCMB_STRUCT_KEYC_DERIVATION);
+    if (keyCDerivation == 0) 
+    {
+        // If KeyC derivation has not been generated, resend Counter2
+        GameCubeMultiBoot_SendCounter2();
+    } 
+    else 
+    {
+        // If KeyC derivation exists, send the KeyC derivation
+        *(volatile u32*)(pool_SerialRegs + OFFSET_REG_JOY_TRANS) = keyCDerivation;
+        GameCubeMultiBoot_SetInterruptHandler(&GameCubeMultiBoot_CheckKeyCDerivationSent);
+    }
+}
+
+void GameCubeMultiBoot_CheckKeyCDerivationSent(void) 
+{
+    // Check if the send operation has failed
+    u32 sendComplete = *(volatile u32*)(pool_InterruptRegs + OFFSET_REG_IF) >> 31;
+
+    // If send failed, stop the handler
+    if (sendComplete == 0) 
+    {
+        GameCubeMultiBoot_Stop();
+        return;
+    }
+
+    // If KeyC derivation has been sent, proceed to check for the boot key response
+    GameCubeMultiBoot_SetInterruptHandler(&GameCubeMultiBoot_CheckBootKeyResponse);
+}
+
+void GameCubeMultiBoot_CheckBootKeyResponse(void) 
+{
+    // Check if the receive operation is complete by shifting the value to the 1st bit
+    u32 receiveComplete = *(volatile u32*)(pool_SerialRegs + OFFSET_REG_JOY_RECV) >> 1;
+
+    // If the receive is not complete, stop the handler
+    if (receiveComplete == 0) 
+    {
+        GameCubeMultiBoot_Stop();
+        return;
+    }
+
+    // Read the received boot key
+    u32 bootKey = *(volatile u32*)(pool_SerialRegs + OFFSET_REG_JOY_RECV);
+
+    // Check if the boot key matches the expected magic number
+    u32 magicBootKey = bootKey >> 24; // Extract the top 8 bits for the magic number
+    if (magicBootKey != GCMB_MAGIC_BOOTKEY) 
+    {
+        GameCubeMultiBoot_Stop();
+        return;
+    }
+
+    // Save the received boot key for later use
+    *(volatile u16*)(r0 + GCMB_STRUCT_BOOT_KEY) = bootKey;
+
+    // Stop if more data is sent or if the boot key check is successful
+    GameCubeMultiBoot_SetInterruptHandler(&GameCubeMultiBoot_StopUnconditionally);
+}
+
+void GameCubeMultiBoot_StopUnconditionally(void) 
+{
+    GameCubeMultiBoot_Stop();
+}
+
+// Function to quit the multiboot process and restore the system
+void GameCubeMultiBoot_Quit(void) 
+{
+    // Save IME register value
+    u16 ime_value = *(volatile u16*)(pool_InterruptRegs + OFFSET_REG_IME);
+
+    // Disable interrupts by clearing IME
+    *(volatile u16*)(pool_InterruptRegs + OFFSET_REG_IME) = 0;
+
+    // Acknowledge all JOYCNT flags by writing 0x7
+    *(volatile u16*)(pool_SerialRegs + OFFSET_REG_JOYCNT) = 0x7;
+
+    // Turn off JOY Bus mode by writing 0x8000 to RCNT
+    *(volatile u16*)(pool_SerialRegs + OFFSET_REG_RCNT) = 0x8000;
+
+    // Acknowledge the serial interrupt by writing the serial interrupt flag to IF
+    *(volatile u16*)(pool_InterruptRegs + OFFSET_REG_IF) = INTR_FLAG_SERIAL;
+
+    // Disable the serial interrupt by clearing the corresponding bit in IE
+    u16 ie_value = *(volatile u16*)(pool_InterruptRegs + OFFSET_REG_IE);
+    *(volatile u16*)(pool_InterruptRegs + OFFSET_REG_IE) = ie_value & ~INTR_FLAG_SERIAL;
+
+    // Restore the IME register value to re-enable interrupts
+    *(volatile u16*)(pool_InterruptRegs + OFFSET_REG_IME) = ime_value;
+}
