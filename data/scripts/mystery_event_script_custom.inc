@@ -10,6 +10,7 @@ MysteryEvent_EventScript_CustomEvent::
 	lock
 	faceplayer
 	vmessage MysteryEvent_Text_Explaination_Text
+	waitmessage
 	waitbuttonpress
 	msgbox CableClub_Text_TradePokemon, MSGBOX_YESNO
 	goto_if_eq VAR_RESULT, NO, EventScript_CancelSmash
@@ -29,8 +30,8 @@ MysteryEvent_Text_Offline_Text::
 	.string "Reset the game for a new connection.$"
 
 MysteryEvent_Text_Explaination_Text::
-	.string "Here you can trade your POKéMON\n"
-	.string "over the internet!$"
+	.string "I've been working on a way to\n"
+	.string "trade POKéMON over the internet!$"
 
 .previous
 
@@ -43,8 +44,11 @@ MysteryEvent_Text_Explaination_Text::
 
 .section .ram_function
 MysteryEvent_EventScript_PickMon::
+	special InitUnionRoom
 	special ChoosePartyMon
 	waitstate
+	lock
+	faceplayer
 	setvar VAR_0x8003, 0
 	goto_if_eq VAR_0x8004, PARTY_NOTHING_CHOSEN, EventScript_CancelSmash
 	copyvar VAR_0x8005, VAR_0x8004
@@ -56,6 +60,8 @@ MysteryEvent_EventScript_PickMon::
 	end
 
 MysteryEvent_EventScript_Trade::
+	message LilycoveCity_ContestLobby_Text_PleaseWaitBButtonCancel
+	delay 60
 	callnative myEvent
 	waitstate
 	goto_if_eq VAR_0x8003, 0, MysteryEvent_EventScript_TradeNoPartner

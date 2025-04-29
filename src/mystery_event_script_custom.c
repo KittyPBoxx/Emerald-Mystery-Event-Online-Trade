@@ -29,6 +29,7 @@
 #include "constants/songs.h"
 #include "field_message_box.h"
 #include "shop.h"
+#include "decompress.h"
 
 #define ROM_FUNCTION __attribute__((section(".rom_function")))
 #define RAM_FUNCTION __attribute__((section(".ram_function")))
@@ -86,7 +87,8 @@ FUNCTION_SECTION void myEvent()
 #define NET_CMD_HEADER(cmd, buf) (((cmd) << 8) | (buf))
 
 FUNCTION_SECTION static const u8 sDot[] = _("·");
-FUNCTION_SECTION static const u8 sWaitingMessage[] = _("Waiting for server:");
+FUNCTION_SECTION static const u8 sWaitingMessageServer[] = _("Waiting for server:");
+FUNCTION_SECTION static const u8 sWaitingMessageFriend[] = _("Trade partner found:");
 
 #define LINK_PARTNER_NONE 0
 #define LINK_PARTNER_SUCCESS 1
@@ -271,11 +273,12 @@ FUNCTION_SECTION void Task_NetworkTaskLoop(u8 taskId)
     switch (gTasks[taskId].netState)
     {
         case NET_RESET_SERIAL:
+            ScriptContext_Stop();
             if (REG_RCNT != R_JOYBUS)
             {
                 // Disable Serial
                 DisableInterrupts(INTR_FLAG_TIMER3 | INTR_FLAG_SERIAL);
-                REG_SIOCNT = SIO_MULTI_MODE;
+                REG_SIOCNT = SIO_MULTI_MODE | SIO_START | SIO_115200_BPS;
                 REG_TMCNT_H(3) = 0;
                 REG_IF = INTR_FLAG_TIMER3 | INTR_FLAG_SERIAL;
                 JOY_TRANS = 0;
@@ -302,13 +305,26 @@ FUNCTION_SECTION void Task_NetworkTaskLoop(u8 taskId)
 
             break;
         case NET_PREPARE_SEND_REQ_TO_GC: 
-            gStringVar3[0] = 'T'; gStringVar3[1] = 'R'; gStringVar3[2] = '_'; gStringVar3[3] = '0';
-            if (DoChunkedSerialDataBlock((u8 *) &gStringVar3[0], SERIAL_MODE_SEND, NET_CMD_HEADER(SEND_DATA_TO_GC_BUFFER, 0), 4, SERIAL_VERIFY_ON))
+            gStringVar3[0] = 'T'; gStringVar3[1] = 'R'; gStringVar3[2] = '_'; 
+            if (gSaveBlock1Ptr->easyChatProfile[0] == EC_WORD_FRIEND && gSaveBlock1Ptr->easyChatProfile[1] == EC_WORD_LINK)
+            {
+                gStringVar3[3] = '1';
+                gStringVar3[4] = gSaveBlock1Ptr->easyChatProfile[2] >> 8;
+                gStringVar3[5] = gSaveBlock1Ptr->easyChatProfile[2] & 0xFF;
+                gStringVar3[6] = gSaveBlock1Ptr->easyChatProfile[3] >> 8;
+                gStringVar3[7] = gSaveBlock1Ptr->easyChatProfile[3] & 0xFF;
+            }
+            else
+            {
+                gStringVar3[3] = '0';
+            }
+
+            if (DoChunkedSerialDataBlock((u8 *) &gStringVar3[0], SERIAL_MODE_SEND, NET_CMD_HEADER(SEND_DATA_TO_GC_BUFFER, 0), gStringVar3[3] == '1' ? 8 : 4, SERIAL_VERIFY_ON))
                 gTasks[taskId].netState = NET_PREPARE_SEND_MON_TO_GC;
 
             break;
         case NET_PREPARE_SEND_MON_TO_GC: 
-            if (DoChunkedSerialDataBlock((u8 *) &gPlayerParty[gSpecialVar_0x8005], SERIAL_MODE_SEND, NET_CMD_HEADER(SEND_DATA_TO_GC_BUFFER, 1), sizeof(struct Pokemon), SERIAL_VERIFY_ON))
+            if (DoChunkedSerialDataBlock((u8 *) &gPlayerParty[gSpecialVar_0x8005], SERIAL_MODE_SEND, NET_CMD_HEADER(SEND_DATA_TO_GC_BUFFER, 1), sizeof(struct BoxPokemon), SERIAL_VERIFY_ON))
                 gTasks[taskId].netState = NET_PREPARE_PUSH_TO_SERVER;
 
             break;
@@ -330,7 +346,14 @@ FUNCTION_SECTION void Task_NetworkTaskLoop(u8 taskId)
             {
                 LoadMessageBoxAndFrameGfx(0, TRUE);
                 VBlankIntrWait(); VBlankIntrWait();
-                AddTextPrinterParameterized(0, FONT_NORMAL, sWaitingMessage, 0, 1, 0, NULL);
+                if (gTasks[taskId].netStateAfterWait == NET_READ_NAME_RESPONSE)
+                {
+                    AddTextPrinterParameterized(0, FONT_NORMAL, sWaitingMessageServer, 0, 1, 0, NULL);
+                }
+                else
+                {
+                    AddTextPrinterParameterized(0, FONT_NORMAL, sWaitingMessageFriend, 0, 1, 0, NULL);
+                }
                 gTasks[taskId].netLoopCounter++;
             }
             else if (gTasks[taskId].netLoopCounter <= gTasks[taskId].netWaitLength)
@@ -372,9 +395,9 @@ FUNCTION_SECTION void Task_NetworkTaskLoop(u8 taskId)
         case NET_READ_MON_RESPONSE: 
         {
             u16 species;
-            if (DoChunkedSerialDataBlock((u8 *) &gEnemyParty[0], SERIAL_MODE_RECV, NET_CMD_HEADER(RECV_DATA_FROM_GC_BUFFER, 0xF1), sizeof(struct Pokemon), SERIAL_VERIFY_ON))
+            if (DoChunkedSerialDataBlock((u8 *) &gDecompressionBuffer, SERIAL_MODE_RECV, NET_CMD_HEADER(RECV_DATA_FROM_GC_BUFFER, 0xF1), sizeof(struct BoxPokemon), SERIAL_VERIFY_ON))
             {
-                species = GetMonData(&gEnemyParty[0], MON_DATA_SPECIES);
+                BoxMonToMon((const struct BoxPokemon *) gDecompressionBuffer, &gEnemyParty[0]);
                 if (!gEnemyParty[0].box.isBadEgg && !(species > SPECIES_EGG))
                 {
                     gSpecialVar_0x8003 = LINK_PARTNER_SUCCESS; 
@@ -395,6 +418,9 @@ FUNCTION_SECTION void Task_NetworkTaskLoop(u8 taskId)
             JOY_TRANS = 0;
             DisableInterrupts(INTR_FLAG_TIMER3 | INTR_FLAG_SERIAL);
             REG_IF = INTR_FLAG_TIMER3 | INTR_FLAG_SERIAL;
+            REG_SIOCNT = SIO_MULTI_MODE | SIO_START | SIO_115200_BPS;
+            REG_TMCNT_H(3) = 0;
+            REG_RCNT = 0; 
             HideFieldMessageBox();
             ScriptContext_Enable();
             DestroyTask(taskId);

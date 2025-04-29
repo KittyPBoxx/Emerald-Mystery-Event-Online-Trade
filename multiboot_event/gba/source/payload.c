@@ -43,8 +43,8 @@ void payload(pSaveBlock1 SaveBlock1,pSaveBlock2 SaveBlock2,pSaveBlock3 SaveBlock
 		MemCpy memcpyFunc = (MemCpy)ROM_memcpy;
 
 		scriptData->magic = RAM_SCRIPT_MAGIC;
-		scriptData->mapGroup = 0;
-		scriptData->mapNum = 9;
+		scriptData->mapGroup = 1;
+		scriptData->mapNum = 4;
 		scriptData->objectId = 1;
 
 		memcpyFunc((void *)RAM_SCRIPT_ADDR, ram_script_bin, ram_script_bin_size);
