@@ -6,23 +6,11 @@
 
 This project is for allowing in game, online trading on an original version of the game with only original hardware. It puts the trade functionality of https://github.com/KittyPBoxx/pokeemerald-net-demo into a mystery event so that it can be run on an original cartrige. 
 
-## Network Diagram
+![](screen1.png) ![](screen2.png)
 
-```mermaid
-sequenceDiagram
-    participant 🎮 GBA
-    participant 📺 WII
-    participant 🌐 TCP SERVER
-    🎮 GBA->>📺 WII: DOL-011 Cable
-    Note over 🎮 GBA,📺 WII: (JOYBUS)
-    📺 WII->>🌐 TCP SERVER: WIFI
-    Note over 📺 WII,🌐 TCP SERVER: (TCP)
-    🌐 TCP SERVER->>📺 WII: WIFI
-    Note over 🌐 TCP SERVER,📺 WII: (TCP)
-    📺 WII->>🎮 GBA: DOL-011 Cable
-    Note over 📺 WII,🎮 GBA: (JOYBUS)
-```
 ## Requirements
+
+![](screen3.jpg)
 
 There are two ways to get this project running:
 
@@ -65,6 +53,22 @@ Normally trades are done at random with anyone else trading on the server. Howev
 
 For example if you sent your profile to 'FRIEND LINK EVOLVE EGG'. The you will only trade with people who have the profile 'FRIEND LINK EVOLVE EGG'
 
+## Network Diagram
+
+```mermaid
+sequenceDiagram
+    participant 🎮 GBA
+    participant 📺 WII
+    participant 🌐 TCP SERVER
+    🎮 GBA->>📺 WII: DOL-011 Cable
+    Note over 🎮 GBA,📺 WII: (JOYBUS)
+    📺 WII->>🌐 TCP SERVER: WIFI
+    Note over 📺 WII,🌐 TCP SERVER: (TCP)
+    🌐 TCP SERVER->>📺 WII: WIFI
+    Note over 🌐 TCP SERVER,📺 WII: (TCP)
+    📺 WII->>🎮 GBA: DOL-011 Cable
+    Note over 📺 WII,🎮 GBA: (JOYBUS)
+```
 
 ## How does it work
 
