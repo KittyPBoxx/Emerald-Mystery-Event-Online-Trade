@@ -47,13 +47,22 @@ int ExitRequested = 0;
 
 void ExitApp()
 {
-	VIDEO_SetBlack(true);
-	VIDEO_Flush();
-	VIDEO_WaitVSync();
-	VIDEO_WaitVSync();
-	ShutdownAudio();
-	StopGX();
-	SYS_ResetSystem(SYS_HOTRESET, 0, 0);
+	#ifdef TARGET_WII
+		VIDEO_SetBlack(true);
+		VIDEO_Flush();
+		VIDEO_WaitVSync();
+		VIDEO_WaitVSync();
+		ShutdownAudio();
+		StopGX();
+	#else 
+		VIDEO_SetBlack(true);
+		VIDEO_Flush();
+		VIDEO_WaitVSync();
+		VIDEO_WaitVSync();
+		ShutdownAudio();
+		StopGX();
+		SYS_ResetSystem(SYS_HOTRESET, 0, 0);
+	#endif
 }
 
 #define GAMECUBE_PORT1 0
